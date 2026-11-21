@@ -270,7 +270,8 @@ async function cmdLogin() {
       // Pre-llena el correo y, si Google lo ofrece, elige la llave de acceso (passkey): sin contraseña,
       // el usuario solo confirma el aviso del sistema (Touch ID / contraseña del equipo).
       const email = page.locator('input[type="email"]');
-      if (await email.isVisible({ timeout: 8000 }).catch(() => false)) {
+      // isVisible() NO espera (ignora timeout): hay que esperar el campo de verdad.
+      if (await email.waitFor({ state: "visible", timeout: 20000 }).then(() => true, () => false)) {
         await email.fill(String(flags.email));
         await email.press("Enter");
         await sleep(4000);
