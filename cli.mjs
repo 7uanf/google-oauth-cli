@@ -16,10 +16,14 @@ import os from "node:os";
 import {
   defaultProfile,
   killOnPort,
+  killProfile,
   ensureChrome,
+  attach,
   openPage,
   DEFAULT_PORT,
 } from "./lib/chrome.mjs";
+import { clientsFor } from "./lib/clients.mjs";
+import { Blocked, lastStep, screenshot, sleep } from "./lib/ui.mjs";
 import {
   authUrl,
   diagnose,
@@ -120,9 +124,11 @@ ${C.b}USO${C.r}
 ${C.b}COMANDOS${C.r}
   ${C.b}ensure${C.r}       Deja el login FUNCIONANDO: crea lo que falte y verifica. Empeza por aca.
   ${C.b}diagnose${C.r}     Que falta para entrar y que falta para publicar
-  ${C.b}create${C.r}       Crea un cliente OAuth Web (Client ID + secret)
+  ${C.b}create${C.r}       Crea un cliente OAuth web o de escritorio (--type desktop). Idempotente
   ${C.b}clients${C.r}      Lista los clientes OAuth del proyecto
-  ${C.b}renew${C.r}        Agrega un secret nuevo a un cliente existente
+  ${C.b}renew${C.r}        Agrega un secret nuevo a un cliente existente (--client <id|nombre>)
+  ${C.b}redirects${C.r}    Agrega redirect URIs a un cliente existente (solo los que falten)
+  ${C.b}login${C.r}        Abre Chrome para iniciar sesion una vez en el perfil de automatizacion
   ${C.b}status${C.r}       Solo el estado de publicacion
   ${C.b}branding${C.r}     Carga los datos de la marca (web, privacidad, terminos, contacto)
   ${C.b}publish${C.r}      Publica la app para salir del limite de 100 usuarios
@@ -166,61 +172,110 @@ sesion queda guardada. Ese perfil contiene cookies de tu cuenta: NO lo subas a g
 
 // ─── Comandos ─────────────────────────────────────────────────────────────────
 
-async function cmdCreate() {
-  const project = flags.project ?? rest[1];
-  const name = flags.name ?? flags.appName ?? rest[2];
-  const redirect = flags.redirect ?? flags.redirectUri ?? rest[3];
-  const email = flags.email ?? flags.supportEmail ?? rest[4];
+/** Lista de valores: `--redirect a,b` o el flag repetido. */
+const many = (v) => (Array.isArray(v) ? v : v ? [v] : []).flatMap((x) => String(x).split(",")).map((x) => x.trim()).filter(Boolean);
 
-  if (!project || !name || !redirect || !email) {
-    console.error(
-      `Faltan datos para crear el cliente.\n\n` +
-        `  gauth create --project <id> --name "<app>" \\\n` +
-        `               --redirect <https://dominio/api/auth/callback/google> \\\n` +
-        `               --email <soporte@dominio>\n`,
-    );
-    process.exit(2);
+/**
+ * Corre una tarea de UI con tope de tiempo global (GAUTH_TIMEOUT, 300 s). Pase lo que pase sale un JSON
+ * con `code` estable: con `blocked: true` NO se reintenta (se resuelve la causa o se avisa al usuario).
+ */
+async function withPage(task) {
+  let page = null;
+  const limit = Number(process.env.GAUTH_TIMEOUT ?? 300) * 1000;
+  const timer = setTimeout(async () => {
+    const shot = page ? await screenshot(page, "timeout") : null;
+    emit({ ok: false, code: "TIMEOUT", step: lastStep(), screenshot: shot, message: `Se agotaron ${limit / 1000} s en "${lastStep()}". Mira la captura; no reintentes en bucle.` });
+  }, limit);
+  try {
+    page = await attach({ port: ctx().port, profile: ctx().profile });
+    const result = await task(page);
+    clearTimeout(timer);
+    emit({ ok: true, ...result }, { human: (p) => console.log(JSON.stringify(p, null, 2)) });
+  } catch (err) {
+    clearTimeout(timer);
+    const shot = page ? await screenshot(page, "error") : null;
+    if (err instanceof Blocked) emit({ ok: false, blocked: true, code: err.code, step: lastStep(), message: err.message, screenshot: shot, ...err.extra });
+    emit({ ok: false, code: "UNEXPECTED", step: lastStep(), message: String(err?.message ?? err).split("\n")[0], screenshot: shot });
   }
-
-  return runLegacy(["create", project, name, redirect, email]);
-}
-
-async function cmdRenew() {
-  const project = requireProject();
-  return runLegacy(["renew", project]);
 }
 
 /**
- * Delega en el script original (create/renew), que ya esta probado contra la consola.
- * Se ejecuta aparte a proposito: ese script hace efectos en el arranque, importarlo
- * dispararia el flujo entero.
+ * Crea un cliente OAuth (idempotente: si ya hay uno con ese nombre, lo reutiliza y agrega los redirects que
+ * falten). `--type desktop` crea el de escritorio para `gcloud ... --client-id-file` o `ga auth`.
  */
-function runLegacy(args) {
-  const script = path.join(HERE, "lib", "oauth-client.mjs");
-  const res = spawnSync(process.execPath, [script, ...args], {
-    encoding: "utf8",
-    stdio: flags.json ? ["inherit", "pipe", "inherit"] : "inherit",
-  });
+async function cmdCreate() {
+  const project = flags.project ?? rest[1];
+  const name = flags.name ?? flags.appName ?? rest[2];
+  const type = String(flags.type ?? "web").toLowerCase();
+  const redirects = many(flags.redirect ?? flags.redirectUri ?? rest[3]);
+  const email = flags.email ?? flags.supportEmail ?? rest[4];
 
-  if (res.error) {
-    console.error(`No pude ejecutar ${script}: ${res.error.message}`);
-    process.exit(1);
+  if (!project || !name || (type === "web" && !redirects.length)) {
+    console.error(
+      `Faltan datos para crear el cliente.
+
+` +
+        `  gauth create --project <id> --name "<app>" --type web \
+` +
+        `               --redirect <https://dominio/api/auth/callback/google>[,<otra>] --email <soporte@dominio>
+` +
+        `  gauth create --project <id> --name "<app> CLI" --type desktop --email <correo> --out client.json
+`,
+    );
+    process.exit(2);
   }
-
-  if (flags.json) {
-    // El script imprime un unico JSON en stdout: se reenvia tal cual para no romper
-    // el contrato de quien lo consuma.
-    const raw = (res.stdout ?? "").trim();
-    try {
-      const parsed = JSON.parse(raw);
-      emit({ ok: true, ...parsed });
-    } catch {
-      emit({ ok: false, raw, error: "La salida del script no fue JSON valido." });
-    }
-  }
-
-  process.exit(res.status ?? 1);
+  return withPage((page) =>
+    clientsFor(page, project).createClient({ name, type, redirects, email, appName: flags.appName, newSecret: !!flags.newSecret, out: flags.out }),
+  );
 }
+
+/** Agrega un secreto nuevo (Google ya no muestra los viejos; máximo 2 por cliente). */
+async function cmdRenew() {
+  const project = requireProject();
+  return withPage(async (page) => {
+    const c = clientsFor(page, project);
+    const client = await c.findClient(flags.client ?? "__first__");
+    const clientSecret = await c.addSecret(client);
+    if (flags.out) {
+      const { installedJson } = await import("./lib/clients.mjs");
+      const { writeFileSync } = await import("node:fs");
+      writeFileSync(flags.out, JSON.stringify(client.type === "desktop" ? installedJson(client.id, clientSecret) : { web: { client_id: client.id, client_secret: clientSecret } }, null, 2));
+    }
+    return { clientId: client.id, clientSecret, out: flags.out ?? null };
+  });
+}
+
+/** Agrega redirect URIs a un cliente web existente (solo los que falten) sin tocar el secreto. */
+async function cmdRedirects() {
+  const project = requireProject();
+  const uris = many(flags.uri ?? flags.redirect);
+  if (!flags.client || !uris.length) {
+    console.error(`Uso: gauth redirects --project <id> --client <id|nombre> --uri <https://...>[,<otra>]`);
+    process.exit(2);
+  }
+  return withPage(async (page) => {
+    const c = clientsFor(page, project);
+    const client = await c.findClient(flags.client);
+    return { clientId: client.id, ...(await c.addRedirects(client, uris)) };
+  });
+}
+
+/** Inicio de sesión único del perfil de automatización (espera hasta 10 min a que el usuario entre). */
+async function cmdLogin() {
+  process.env.GAUTH_TIMEOUT ??= "660";
+  return withPage(async (page) => {
+    await page.goto("https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fconsole.cloud.google.com%2F", { waitUntil: "domcontentloaded" });
+    await page.bringToFront().catch(() => {});
+    console.error("Inicia sesion en la ventana de Chrome que se abrio (10 min)...");
+    const deadline = Date.now() + 600000;
+    while (!page.url().startsWith("https://console.cloud.google.com")) {
+      if (Date.now() > deadline) throw new Blocked("SIGN_IN_REQUIRED", "No se completo el inicio de sesion en 10 minutos.");
+      await sleep(1500);
+    }
+    return { signedIn: true };
+  });
+}
+
 
 async function cmdStatus() {
   const project = requireProject();
@@ -409,33 +464,28 @@ async function cmdOpen() {
 
 async function cmdKill() {
   const n = killOnPort(ctx().port);
+  killProfile(ctx().profile);
   emit({ ok: true, killed: n, port: ctx().port }, {
     human: () => console.log(n ? `Chrome de automatizacion detenido (${n} proceso/s).` : "No habia nada corriendo."),
   });
 }
 
-/**
- * Crea un cliente OAuth y devuelve `{clientId, clientSecret}`.
- *
- * Se ejecuta como proceso aparte a proposito: `lib/oauth-client.mjs` arranca el flujo al
- * importarse. A diferencia de `runLegacy`, no corta el proceso: lo usa `ensure`, que tiene
- * que seguir con los pasos siguientes.
- */
+/** Crea (o reutiliza) un cliente web y devuelve `{clientId, clientSecret}`. Lo usa `ensure`. */
 function crearCliente({ project, name, redirect, email }) {
-  const script = path.join(HERE, "lib", "oauth-client.mjs");
-  const res = spawnSync(process.execPath, [script, "create", project, name, redirect, email], {
+  // Se corre `gauth create` en otro proceso: así `ensure` sigue aunque create termine con exit().
+  const res = spawnSync(process.execPath, [path.join(HERE, "cli.mjs"), "create", "--project", project, "--name", name, "--type", "web", "--redirect", redirect, "--email", email, "--new-secret", "--json"], {
     encoding: "utf8",
     stdio: ["inherit", "pipe", "inherit"],
   });
-
-  if (res.error) throw new Error(`No pude ejecutar ${script}: ${res.error.message}`);
-
   const raw = (res.stdout ?? "").trim();
+  let out;
   try {
-    return JSON.parse(raw);
+    out = JSON.parse(raw);
   } catch {
     throw new Error(`La creacion no devolvio JSON valido: ${raw.slice(0, 300)}`);
   }
+  if (!out.ok) throw new Error(`${out.code}: ${out.message}`);
+  return { clientId: out.clientId, clientSecret: out.clientSecret };
 }
 
 /** Deja el login funcionando. Ver `lib/ensure.mjs` para el por que del bucle. */
@@ -514,6 +564,8 @@ async function cmdClients() {
 // ─── Dispatch ─────────────────────────────────────────────────────────────────
 
 const COMMANDS = {
+  redirects: cmdRedirects,
+  login: cmdLogin,
   ensure: cmdEnsure,
   create: cmdCreate,
   renew: cmdRenew,
