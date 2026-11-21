@@ -5,7 +5,10 @@
  *
  *   gtm accounts                                    cuentas y contenedores visibles
  *   gtm ensure  --account NOMBRE --container NOMBRE --domain sitio.com --ga4 G-XXXX [--no-publish]
- *               idempotente: contenedor web + etiqueta de Google (GA4) en todas las páginas + versión publicada
+ *               [--event-params a,b,c] [--events-regex '^[a-z][a-z0-9_]*$']
+ *               idempotente: contenedor web + etiqueta de Google (GA4) en todas las páginas + versión publicada.
+ *               Con --event-params agrega además la regla genérica de eventos: todo `dataLayer.push({event,…})`
+ *               cuyo nombre cumpla --events-regex llega a GA4 con esos parámetros (sin tocar GTM por evento).
  *   gtm publish --account ID --container ID         crea versión con lo pendiente del espacio de trabajo y la publica
  *
  * Códigos: ACCOUNT_REQUIRED (la API no crea cuentas: trae `url`), NOT_AUTHORIZED, TOKEN_EXPIRED,
@@ -52,6 +55,86 @@ async function publish(workspace, notes) {
   return { published: true, versionId: version.containerVersionId, name: version.name };
 }
 
+/** Variable integrada "Event" (la usan el activador y la etiqueta genérica). Idempotente. */
+async function enableEventVariable(workspace) {
+  const list = (await api("GET", `${BASE}/${workspace.path}/built_in_variables`)).builtInVariable ?? [];
+  if (list.some((v) => v.type === "event")) return;
+  await api("POST", `${BASE}/${workspace.path}/built_in_variables?type=event`);
+}
+
+/**
+ * Regla genérica de eventos: variables de capa de datos para un vocabulario fijo de parámetros, un activador
+ * de evento personalizado por regex y una etiqueta de evento GA4 que envía {{Event}} con esos parámetros.
+ * Idempotente: crea lo que falte (por nombre) y agrega a la etiqueta los parámetros nuevos.
+ */
+async function ensureEventRule(workspace, ga4, params, regex, steps) {
+  await enableEventVariable(workspace);
+  const vars = (await api("GET", `${BASE}/${workspace.path}/variables`)).variable ?? [];
+  for (const p of params) {
+    const name = `dlv - ${p}`;
+    if (vars.some((v) => v.name === name)) continue;
+    await api("POST", `${BASE}/${workspace.path}/variables`, {
+      name,
+      type: "v",
+      parameter: [
+        { type: "integer", key: "dataLayerVersion", value: "2" },
+        { type: "boolean", key: "setDefaultValue", value: "false" },
+        { type: "template", key: "name", value: p },
+      ],
+    });
+    steps.push(`variable ${name}`);
+  }
+
+  const TRIGGER = "Eventos del sitio (dataLayer)";
+  const triggers = (await api("GET", `${BASE}/${workspace.path}/triggers`)).trigger ?? [];
+  let trigger = triggers.find((t) => t.name === TRIGGER);
+  if (!trigger) {
+    trigger = await api("POST", `${BASE}/${workspace.path}/triggers`, {
+      name: TRIGGER,
+      type: "customEvent",
+      customEventFilter: [
+        { type: "matchRegex", parameter: [{ type: "template", key: "arg0", value: "{{_event}}" }, { type: "template", key: "arg1", value: regex }] },
+      ],
+    });
+    steps.push(`activador "${TRIGGER}" (${regex})`);
+  }
+
+  const TAG = "GA4 — eventos del sitio";
+  const table = {
+    type: "list",
+    key: "eventSettingsTable",
+    list: params.map((p) => ({
+      type: "map",
+      map: [
+        { type: "template", key: "parameter", value: p },
+        { type: "template", key: "parameterValue", value: `{{dlv - ${p}}}` },
+      ],
+    })),
+  };
+  const body = {
+    name: TAG,
+    type: "gaawe",
+    parameter: [
+      { type: "template", key: "eventName", value: "{{Event}}" },
+      { type: "template", key: "measurementIdOverride", value: ga4 },
+      table,
+    ],
+    firingTriggerId: [trigger.triggerId],
+  };
+  const tags = (await api("GET", `${BASE}/${workspace.path}/tags`)).tag ?? [];
+  const existing = tags.find((t) => t.name === TAG);
+  if (!existing) {
+    await api("POST", `${BASE}/${workspace.path}/tags`, body);
+    steps.push(`etiqueta "${TAG}" con ${params.length} parámetros`);
+  } else {
+    const current = (existing.parameter ?? []).find((x) => x.key === "eventSettingsTable")?.list?.length ?? 0;
+    if (current !== params.length) {
+      await api("PUT", `${BASE}/${existing.path}`, { ...body, fingerprint: existing.fingerprint });
+      steps.push(`etiqueta "${TAG}" actualizada (${params.length} parámetros)`);
+    } else steps.push(`etiqueta "${TAG}" existente`);
+  }
+}
+
 async function ensure() {
   const accountName = need(flag("account"), "--account");
   const containerName = need(flag("container"), "--container");
@@ -85,6 +168,9 @@ async function ensure() {
     });
     steps.push(`etiqueta de Google creada (${ga4}, todas las páginas)`);
   } else steps.push("etiqueta de Google existente");
+
+  const params = (flag("event-params") ?? "").split(",").map((x) => x.trim()).filter(Boolean);
+  if (params.length) await ensureEventRule(workspace, ga4, params, flag("events-regex") ?? "^[a-z][a-z0-9_]*$", steps);
 
   const pub = flag("no-publish") ? { published: false, reason: "--no-publish" } : await publish(workspace, `GA4 ${ga4} (gtm ensure)`);
   steps.push(pub.published ? `versión ${pub.versionId} publicada` : `sin publicar: ${pub.reason}`);
