@@ -1,7 +1,7 @@
 {
   "name": "google-oauth-cli",
-  "version": "1.1.0",
-  "description": "Create, rotate, publish and inspect Google OAuth 2.0 credentials from the terminal by automating the Google Cloud Console with Playwright. No gcloud OAuth screen, no manual clicking.",
+  "version": "1.2.0",
+  "description": "Google OAuth 2.0 (consent screen, web and desktop clients, secrets, test users, publishing) and Google Analytics 4 (property, stream, retention, access, reports) from the terminal.",
   "keywords": [
     "google-oauth",
     "oauth2",
@@ -16,7 +16,12 @@
     "auth-js",
     "next-auth",
     "publish-oauth-app",
-    "test-users"
+    "test-users",
+    "google-analytics",
+    "ga4",
+    "analytics-admin-api",
+    "measurement-id",
+    "desktop-oauth-client"
   ],
   "homepage": "https://github.com/Z1Code/google-oauth-cli#readme",
   "bugs": {
@@ -32,7 +37,8 @@
   "bin": {
     "google-oauth-cli": "cli.mjs",
     "gauth": "cli.mjs",
-    "google-oauth-mcp": "mcp/server.mjs"
+    "google-oauth-mcp": "mcp/server.mjs",
+    "ga": "ga.mjs"
   },
   "main": "lib/consent.mjs",
   "exports": {
@@ -42,6 +48,7 @@
   },
   "files": [
     "cli.mjs",
+    "ga.mjs",
     "lib/",
     "mcp/",
     "tools/",

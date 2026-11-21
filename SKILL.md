@@ -1,6 +1,6 @@
 ---
-name: google-oauth-cli
-description: Create, rotate, publish and inspect Google OAuth 2.0 credentials by automating the Google Cloud Console. Use for ANY task involving a Google client ID or client secret, Google Sign-In, Auth.js/NextAuth Google provider, redirect_uri_mismatch, "Google login not working", consent screen, test users, or publishing an OAuth app out of Testing mode. Also use when a login fails and the application logs are empty — that is the signature of a consent screen in Testing with no test users.
+name: google
+description: Google OAuth and Google Analytics from the terminal with one toolkit (google-oauth-cli) — `gauth` drives the Google Auth Platform (consent screen, web and desktop OAuth clients, secrets, redirect URIs, test users, branding, publishing, diagnose) and `ga` drives Google Analytics 4 through the official APIs (account/property/web stream, Measurement ID, retention, Google Signals, access, reports). Use for ANY Google Sign-In / client ID / client secret / AUTH_GOOGLE_ID / redirect_uri_mismatch / "Se bloqueó esta app" / consent screen / test users / login fails with empty app logs task, and for ANY Google Analytics / GA4 / measurement ID / traffic numbers task.
 metadata:
   priority: 9
   promptSignals:
@@ -10,116 +10,106 @@ metadata:
       - "client id"
       - "client secret"
       - "google sign in"
-      - "google login not working"
+      - "login con google"
       - "redirect_uri_mismatch"
       - "AUTH_GOOGLE_ID"
-      - "AUTH_GOOGLE_SECRET"
       - "consent screen"
       - "test users"
-      - "publish oauth app"
-      - "conectar google"
-      - "login con google"
+      - "usuarios de prueba"
+      - "se bloqueó esta app"
+      - "google analytics"
+      - "ga4"
+      - "measurement id"
+      - "id de medición"
     minScore: 3
 ---
 
-# google-oauth-cli
+# google — `gauth` (OAuth) + `ga` (Analytics)
 
-Wrapper around a CLI. Never hand-edit console state; call the CLI.
+One package: **google-oauth-cli** (github.com/7uanf/google-oauth-cli). Two binaries:
 
-## The rule
+- `gauth` — drives the Google Cloud Console with Chrome + CDP, because **the consent screen, test users,
+  branding and personal-account OAuth clients have no API and no gcloud command**.
+- `ga` — Google Analytics 4 via the official Admin + Data APIs. No browser except a one-time authorization.
 
-Run `gauth ...` and read the JSON. Do not try to drive the Cloud Console yourself,
-and do not reach for `gcloud` for anything below — **the OAuth consent screen has no
-API and no gcloud command**. `gcloud` only creates projects and enables APIs.
+Both print **one JSON object on stdout** (`gauth … --json`; `ga` always). Progress goes to stderr.
 
-## Start here, always
+## Install / update
 
 ```bash
-gauth diagnose --project <id> --json
+npm install -g github:7uanf/google-oauth-cli     # gives gauth, ga, google-oauth-mcp
 ```
 
-This is the single most useful call. It returns `blockers[]` with a stable `code`
-you can branch on:
+## Where to run it
 
-| `code` | Meaning |
+`gauth` opens a visible Chrome. If the user's main machine must stay free, run it on a secondary machine
+over SSH (Juan: the Mac — `ssh jfernandez@Mac-mini-de-Juan.local 'export PATH=/opt/homebrew/bin:$PATH; gauth …'`).
+The Chrome profile (`~/.google-oauth-cli/chrome-profile`) holds a live Google session: never commit or copy it.
+
+## OAuth — `gauth`
+
+```bash
+gauth diagnose --project P --json        # START HERE → blockers[] with a `fix` each
+gauth ensure   --project P --name N --redirect URL --email E --emails "a@x,b@y"   # idempotent end-to-end
+gauth create   --project P --name N --type web --redirect URL[,URL2] --email E [--new-secret]
+gauth create   --project P --name "N CLI" --type desktop --email E --out client.json   # for ga / gcloud --client-id-file
+gauth renew    --project P --client <id|name> [--out F]     # adds a secret (max 2 per client)
+gauth redirects --project P --client <id|name> --uri URL[,URL2]   # adds only the missing ones
+gauth test-users list|add|remove --project P [--emails a@x,b@y]
+gauth branding --project P --homepage U --privacy U --terms U --contact E
+gauth publish  --project P
+gauth login | gauth kill
+```
+
+`create` is idempotent: a client with the same name is reused (missing redirects are added; a new secret only
+with `--new-secret`, or automatically for desktop + `--out`). It creates the consent screen if missing.
+
+## Analytics — `ga`
+
+First time per Google Cloud project:
+1. `gauth create --project P --name "<App> CLI" --type desktop --email <owner> --out ~/.claude-skills/analytics/client.json`
+   and `gauth test-users add --project P --emails <owner>`.
+2. `gcloud services enable analyticsadmin.googleapis.com analyticsdata.googleapis.com --project=P`
+3. `ga auth --client-file ~/.claude-skills/analytics/client.json [--browser-profile ~/.google-oauth-cli/chrome-profile]`
+   (run in background; the user clicks Continue/Allow; "unverified app" is expected for our own Testing app).
+
+```bash
+ga whoami | ga accounts
+ga ensure --account "Acme" --property "acme.com" --url https://acme.com --timezone America/Santiago \
+          --currency USD --region CL --retention 14 [--viewer sa@proj.iam.gserviceaccount.com]   # → measurementId
+ga grant  --property ID --email E --role viewer|analyst|editor|admin
+ga report --property ID --days 28 | ga realtime --property ID
+```
+
+## Error codes — act, never loop
+
+| code | do this |
 |---|---|
-| `NO_TEST_USERS` | Consent screen in Testing with zero test users → **every login is rejected before reaching the app** |
-| `NOT_PUBLISHED` | App is in Testing, capped at 100 users for its entire lifetime |
-| `BRANDING_URLS_MISSING` | Missing home page / privacy policy / terms → publishing is blocked |
-| `BRANDING_CONTACT_MISSING` | Missing developer contact email |
+| `SIGN_IN_REQUIRED` | `gauth login` in background and ask the user to sign in in that Chrome window. Then run once. |
+| `NO_ACCESS` / `PROJECT_NOT_FOUND` | Wrong account in the profile or wrong project id. |
+| `CONSENT_NEEDS_EMAIL` | Re-run with `--email`. |
+| `SECRET_LIMIT` | Client has 2 secrets: delete an old one in the console, or create another client. |
+| `CLIENT_NOT_FOUND` | See `clients[]` in the JSON. |
+| `TIMEOUT` / `UNEXPECTED` | Read `step` + `screenshot`. Fix the selector in `lib/clients.mjs` / `lib/ui.mjs`, retry ONCE. |
+| `NOT_AUTHORIZED` / `TOKEN_EXPIRED` | `ga auth` (Testing-mode refresh tokens expire after 7 days). |
+| `TOS_REQUIRED` | New GA account: give the user `url` to accept the Analytics terms, then `ga ensure` again. |
+| `API_DISABLED` | Run the `enable` command from the JSON. |
 
-`ok: true` with an empty `blockers` means the OAuth setup is not the problem — look
-elsewhere.
+**Rules**
+- Max one retry per command. A second identical failure means the console changed: fix the code in the repo.
+- **Never write one-off console scripts.** Add the capability to the repo so the next session has it.
+- Never click the console with Playwright locators (the header widget intercepts pointer events → retry
+  loop). Use `clickText` / `mustClick` / `setInput` from `lib/ui.mjs`.
+- Never print secrets in chat or commit them; `--out` files go to a temp dir or the server.
 
-## The two facts that matter most
+## Facts that matter
 
-**1. A consent screen in Testing with zero test users rejects every login, before the
-request reaches the application.** Your app logs stay empty, so it looks like a code
-bug. It is not. Fix:
-
-```bash
-gauth test-users add --project <id> --emails "a@x.com,b@y.com"
-```
-
-**2. Publishing requires a complete branding page**, including publicly reachable
-privacy policy and terms URLs. If those pages do not exist on the site, publishing is
-impossible — the button stays disabled and saves silently do not persist. Do not
-retry the click; create the pages first.
-
-## Commands
-
-```bash
-gauth create --project <id> --name "<App>" \
-             --redirect <https://domain/api/auth/callback/google> \
-             --email <support@domain>
-gauth renew      --project <id>                 # new secret; the old one keeps working
-gauth diagnose   --project <id>                 # blockers + fixes
-gauth status     --project <id>                 # publish state only
-gauth branding   --project <id>                 # read branding fields
-gauth branding   --project <id> --homepage <url> --privacy <url> --terms <url> --contact <email>
-gauth publish    --project <id>
-gauth test-users list   --project <id>
-gauth test-users add    --project <id> --emails "a@x.com,b@y.com"
-gauth test-users remove --project <id> --emails "a@x.com"
-gauth kill                                      # unstick Chrome
-```
-
-Always pass `--json` when you are consuming the output.
-
-## How to work
-
-1. `gauth diagnose --json` → read `blockers[]`.
-2. Resolve blockers in this order: missing test users → branding → publish.
-3. Re-run `diagnose` to confirm `ok: true`. Do not assume a fix worked.
-
-## Rules
-
-- **Never invent a client ID or secret.** Only use values the CLI printed.
-- **Never send secrets to a log, a file in the repo, or a chat message.** `create` and
-  `renew` print them on stdout; capture them into the project `.env` directly.
-- **Do not retry a command that returned `blocked: true`.** That is a server-side
-  precondition, not a flaky click. Fix the blocker instead.
-- **`renew` is safe.** It adds a secret; the previous one keeps working until deleted
-  in the console. No downtime.
-- Variable names by framework: Auth.js v5 → `AUTH_GOOGLE_ID` / `AUTH_GOOGLE_SECRET`;
-  generic → `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET`.
-
-## Requirements
-
-`gcloud` for project creation only. If the project does not exist:
-
-```bash
-gcloud projects create <id> && gcloud config set project <id>
-gcloud services enable people.googleapis.com cloudresourcemanager.googleapis.com
-```
-
-The first `gauth` run opens Chrome with a dedicated profile for a one-time Google
-sign-in. That profile holds a live session — never commit it.
-
-## If something fails
-
-`gauth` returns `{ "ok": false, ... }` and a non-zero exit code. Read the message: it
-is written to be actionable. `docs/TROUBLESHOOTING.md` in the repo covers every known
-failure mode, including the Chrome/CDP traps.
-
-Full docs: https://github.com/Z1Code/google-oauth-cli
+1. **Testing + zero test users = every login rejected before it reaches the app** (empty app logs) → add test users.
+2. **"Se bloqueó esta app" with gcloud** = gcloud's own client can't request sensitive scopes (Analytics,
+   Drive…). Use a desktop client of the user's own project (`gauth create --type desktop`).
+3. Publishing needs branding (homepage, privacy URL, authorized domain, developer contact). Only non-sensitive
+   scopes (openid/email/profile) publish without Google verification.
+4. Auth.js: redirect `APP_URL/api/auth/callback/google`; env `AUTH_GOOGLE_ID` / `AUTH_GOOGLE_SECRET`.
+5. GA4: load gtag only after cookie consent, never on staging/localhost; privacy policy must match `--retention`.
+   Servers read GA/Search Console with a service account granted `viewer` (`ga grant`), not a person's token.
+   Search Console ↔ GA linking has no API (Admin → Product links, 30 s).

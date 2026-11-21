@@ -309,3 +309,26 @@ running — Chrome will hand off to the existing process and the debug port will
 ## License
 
 MIT
+
+## Google Analytics 4 — `ga`
+
+Same package, second binary. Uses the official Analytics Admin + Data APIs (no browser after a one-time
+authorization with a **desktop** OAuth client of your own project — gcloud's client is blocked for Analytics
+scopes):
+
+```bash
+gauth create --project <id> --name "My App CLI" --type desktop --email me@x.com --out client.json
+ga auth --client-file client.json
+ga ensure --account "My Co" --property "my.com" --url https://my.com --retention 14   # → measurementId (G-…)
+ga report --property <propertyId> --days 28
+```
+
+## New in 1.2
+
+- `create --type desktop`, idempotent `create` (reuses a client with the same name), `renew --client`,
+  `redirects`, `login`.
+- All console clicks go through JS (`lib/ui.mjs`): a header widget intercepts pointer events and made
+  Playwright retry clicks forever.
+- Global timeout (`GAUTH_TIMEOUT`, 300 s) with a stable `code` + screenshot instead of hanging.
+- Stale Chrome holding the automation profile is killed before launch (it used to block the debug port).
+- Your normal Chrome is no longer reopened after `create`/`renew`.
