@@ -117,6 +117,7 @@ async function ensureEventRule(workspace, ga4, params, regex, steps) {
     parameter: [
       { type: "template", key: "eventName", value: "{{Event}}" },
       { type: "template", key: "measurementIdOverride", value: ga4 },
+      { type: "boolean", key: "sendEcommerceData", value: "false" },
       table,
     ],
     firingTriggerId: [trigger.triggerId],
@@ -171,6 +172,15 @@ async function ensure() {
 
   const params = (flag("event-params") ?? "").split(",").map((x) => x.trim()).filter(Boolean);
   if (params.length) await ensureEventRule(workspace, ga4, params, flag("events-regex") ?? "^[a-z][a-z0-9_]*$", steps);
+
+  // GTM agrega solo una etiqueta "Google Analytics" (dest_ga) al crear la etiqueta de Google por API, y esa
+  // etiqueta duplicada hace fallar la compilación del contenedor. Se quita (la etiqueta de Google ya mide).
+  for (const t of (await api("GET", `${BASE}/${workspace.path}/tags`)).tag ?? []) {
+    if (t.type === "dest_ga" && (t.parameter ?? []).some((p) => p.key === "destinationId" && p.value === ga4)) {
+      await api("DELETE", `${BASE}/${t.path}`);
+      steps.push("quitada la etiqueta dest_ga automática (rompe la compilación)");
+    }
+  }
 
   const pub = flag("no-publish") ? { published: false, reason: "--no-publish" } : await publish(workspace, `GA4 ${ga4} (gtm ensure)`);
   steps.push(pub.published ? `versión ${pub.versionId} publicada` : `sin publicar: ${pub.reason}`);
