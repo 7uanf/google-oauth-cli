@@ -23,7 +23,7 @@ import {
   DEFAULT_PORT,
 } from "./lib/chrome.mjs";
 import { clientsFor } from "./lib/clients.mjs";
-import { Blocked, lastStep, screenshot, sleep } from "./lib/ui.mjs";
+import { Blocked, clickText, lastStep, screenshot, sleep } from "./lib/ui.mjs";
 import {
   authUrl,
   diagnose,
@@ -128,7 +128,7 @@ ${C.b}COMANDOS${C.r}
   ${C.b}clients${C.r}      Lista los clientes OAuth del proyecto
   ${C.b}renew${C.r}        Agrega un secret nuevo a un cliente existente (--client <id|nombre>)
   ${C.b}redirects${C.r}    Agrega redirect URIs a un cliente existente (solo los que falten)
-  ${C.b}login${C.r}        Abre Chrome para iniciar sesion una vez en el perfil de automatizacion
+  ${C.b}login${C.r}        Inicio de sesion unico del perfil (--email <e>: pre-llena y elige la llave de acceso)
   ${C.b}status${C.r}       Solo el estado de publicacion
   ${C.b}branding${C.r}     Carga los datos de la marca (web, privacidad, terminos, contacto)
   ${C.b}publish${C.r}      Publica la app para salir del limite de 100 usuarios
@@ -266,6 +266,25 @@ async function cmdLogin() {
   return withPage(async (page) => {
     await page.goto("https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fconsole.cloud.google.com%2F", { waitUntil: "domcontentloaded" });
     await page.bringToFront().catch(() => {});
+    if (flags.email) {
+      // Pre-llena el correo y, si Google lo ofrece, elige la llave de acceso (passkey): sin contraseña,
+      // el usuario solo confirma el aviso del sistema (Touch ID / contraseña del equipo).
+      const email = page.locator('input[type="email"]');
+      if (await email.isVisible({ timeout: 8000 }).catch(() => false)) {
+        await email.fill(String(flags.email));
+        await email.press("Enter");
+        await sleep(4000);
+      }
+      if (!flags.password) {
+        for (let i = 0; i < 2; i++) {
+          const passkey = await clickText(page, /llave de acceso|passkey/i);
+          if (passkey.ok) break;
+          // Si muestra la contraseña primero: "Probar otra manera" → lista de métodos.
+          await clickText(page, /probar otra manera|try another way/i);
+          await sleep(2500);
+        }
+      }
+    }
     console.error("Inicia sesion en la ventana de Chrome que se abrio (10 min)...");
     const deadline = Date.now() + 600000;
     while (!page.url().startsWith("https://console.cloud.google.com")) {
