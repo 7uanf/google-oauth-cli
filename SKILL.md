@@ -1,6 +1,6 @@
 ---
 name: google
-description: Google OAuth and Google Analytics from the terminal with one toolkit (google-oauth-cli) — `gauth` drives the Google Auth Platform (consent screen, web and desktop OAuth clients, secrets, redirect URIs, test users, branding, publishing, diagnose) and `ga` drives Google Analytics 4 through the official APIs (account/property/web stream, Measurement ID, retention, Google Signals, access, reports). Use for ANY Google Sign-In / client ID / client secret / AUTH_GOOGLE_ID / redirect_uri_mismatch / "Se bloqueó esta app" / consent screen / test users / login fails with empty app logs task, and for ANY Google Analytics / GA4 / measurement ID / traffic numbers task.
+description: Google OAuth, Google Analytics 4 and Google Tag Manager from the terminal with one toolkit (google-oauth-cli) — `gauth` drives the Google Auth Platform (consent screen, web and desktop OAuth clients, secrets, redirect URIs, test users, branding, publishing, diagnose) and `ga` drives Google Analytics 4 through the official APIs (account/property/web stream, Measurement ID, retention, Google Signals, access, custom dimensions, reports) and `gtm` drives Tag Manager (container, GA4 Google tag, a generic dataLayer→GA4 event rule, publish). Use for ANY Google Sign-In / client ID / client secret / AUTH_GOOGLE_ID / redirect_uri_mismatch / "Se bloqueó esta app" / consent screen / test users / login fails with empty app logs task, and for ANY Google Analytics / GA4 / measurement ID / traffic numbers / Google Tag Manager / GTM / dataLayer events task.
 metadata:
   priority: 9
   promptSignals:
@@ -21,16 +21,20 @@ metadata:
       - "ga4"
       - "measurement id"
       - "id de medición"
+      - "tag manager"
+      - "gtm"
+      - "datalayer"
     minScore: 3
 ---
 
-# google — `gauth` (OAuth) + `ga` (Analytics)
+# google — `gauth` (OAuth) + `ga` (Analytics) + `gtm` (Tag Manager)
 
 One package: **google-oauth-cli** (github.com/7uanf/google-oauth-cli). Two binaries:
 
 - `gauth` — drives the Google Cloud Console with Chrome + CDP, because **the consent screen, test users,
   branding and personal-account OAuth clients have no API and no gcloud command**.
 - `ga` — Google Analytics 4 via the official Admin + Data APIs. No browser except a one-time authorization.
+- `gtm` — Google Tag Manager via the Tag Manager API v2. Shares `ga`'s token (`lib/gapi.mjs`).
 
 Both print **one JSON object on stdout** (`gauth … --json`; `ga` always). Progress goes to stderr.
 
@@ -81,6 +85,28 @@ ga grant  --property ID --email E --role viewer|analyst|editor|admin
 ga report --property ID --days 28 | ga realtime --property ID
 ```
 
+## Tag Manager — `gtm`
+
+```bash
+gtm accounts
+gtm ensure --account "Acme" --container "acme.com" --domain acme.com --ga4 G-XXXX            --event-params chapter,network,label,...    # → publicId GTM-XXXX, version published
+gtm publish --account ID --container ID
+```
+
+`ensure` (idempotent): web container + Google tag (GA4) on All Pages + **generic event rule**: data-layer
+variables `dlv - <param>`, a Custom Event trigger matching `^[a-z][a-z0-9_]*$` and a GA4 Event tag sending
+`{{Event}}` with those params. A new site event never needs a GTM change; a new *param* does (re-run with
+the full list, then `ga dimensions --property ID --params <new>` so it shows in reports).
+
+**The API cannot create a GTM account** (Terms of Service): create it once in tagmanager.google.com, then
+everything else is API. Lessons verified against real GA4 hits:
+- GTM auto-adds a `dest_ga` "Google Analytics" tag when the Google tag is created by API → **container
+  compile error**. `gtm ensure` deletes it.
+- The data layer **merges params across pushes**: the site must reset the whole param vocabulary on every
+  event (`{...allParamsUndefined, event, ...params}`), or events carry the previous event's params.
+- Verify end to end: load `gtm.js?id=GTM-…` in a headless browser, push events, capture `/g/collect` hits
+  (`en=`, `ep.*`, `epn.*`). GA4 batches; flush by leaving the page.
+
 ## Error codes — act, never loop
 
 | code | do this |
@@ -94,6 +120,7 @@ ga report --property ID --days 28 | ga realtime --property ID
 | `NOT_AUTHORIZED` / `TOKEN_EXPIRED` | `ga auth` (Testing-mode refresh tokens expire after 7 days). |
 | `TOS_REQUIRED` | New GA account: give the user `url` to accept the Analytics terms, then `ga ensure` again. |
 | `API_DISABLED` | Run the `enable` command from the JSON. |
+| `ACCOUNT_REQUIRED` | No GTM account by that name: create it once in the web (ToS), then `gtm ensure`. |
 
 **Rules**
 - Max one retry per command. A second identical failure means the console changed: fix the code in the repo.
