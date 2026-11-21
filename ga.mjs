@@ -9,6 +9,7 @@
  *   ga ensure   --account NOMBRE --property NOMBRE --url https://sitio --timezone America/Santiago
  *               [--currency USD] [--region CL] [--retention 14] [--viewer correo]...   (idempotente)
  *   ga grant    --property ID --email E [--role viewer|analyst|editor|admin]
+ *   ga dimensions --property ID --params a,b,c      registra parámetros de evento como dimensiones (idempotente)
  *   ga report   --property ID [--days 28]                      resumen: usuarios, sesiones, países, páginas
  *   ga realtime --property ID                                  usuarios activos ahora
  *
@@ -116,6 +117,29 @@ async function ensure() {
   };
 }
 
+/**
+ * Registra parámetros de evento como dimensiones personalizadas (alcance evento). Sin esto GA4 recibe los
+ * parámetros pero no aparecen en los reportes. Idempotente; los rechazados (p. ej. ya predefinidos) se
+ * informan sin cortar el resto.
+ */
+async function dimensions() {
+  const property = `properties/${need(flag("property"), "--property").replace(/^properties\//, "")}`;
+  const params = many("params");
+  if (!params.length) throw new Blocked("USAGE", "Falta --params a,b,c");
+  const existing = ((await api("GET", `${ADMIN}/v1beta/${property}/customDimensions?pageSize=200`)).customDimensions ?? []).map((d) => d.parameterName);
+  const created = [], skipped = [], failed = [];
+  for (const p of params) {
+    if (existing.includes(p)) { skipped.push(p); continue; }
+    try {
+      await api("POST", `${ADMIN}/v1beta/${property}/customDimensions`, { parameterName: p, displayName: p, scope: "EVENT", description: "Parámetro de evento del sitio (ver docs/ANALYTICS-EVENTS.md)" });
+      created.push(p);
+    } catch (e) {
+      failed.push({ param: p, error: e.message });
+    }
+  }
+  return { property, created, alreadyRegistered: skipped, failed };
+}
+
 // ─── Analytics Data ──────────────────────────────────────────────────────────────────────────────────────────
 async function report() {
   const property = `properties/${need(flag("property"), "--property").replace(/^properties\//, "")}`;
@@ -146,6 +170,7 @@ try {
     : cmd === "accounts" ? { accounts: await accounts() }
     : cmd === "ensure" ? await ensure()
     : cmd === "grant" ? await grant(`properties/${need(flag("property"), "--property").replace(/^properties\//, "")}`, need(flag("email"), "--email"), flag("role") ?? "viewer")
+    : cmd === "dimensions" ? await dimensions()
     : cmd === "report" ? await report()
     : cmd === "realtime" ? await realtime()
     : (() => { throw new Blocked("USAGE", `Comando desconocido: ${cmd ?? "(ninguno)"}. Ver la cabecera de ga.mjs.`); })();
