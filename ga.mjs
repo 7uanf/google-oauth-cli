@@ -3,7 +3,7 @@
  * ga — Google Analytics 4 desde la terminal, con las APIs oficiales (Admin + Data). Sin navegador salvo para
  * autorizar una vez. Salida: SIEMPRE un JSON por stdout; el progreso va por stderr.
  *
- *   ga auth     --client-file F.json [--browser-profile DIR]   autoriza (OAuth de app de escritorio, loopback)
+ *   ga auth     --client-file F.json [--cdp 9222 --auto-consent --email E]   autoriza ga + gtm (un solo token)
  *   ga whoami                                                  cuenta autorizada y scopes
  *   ga accounts                                                cuentas y propiedades visibles
  *   ga ensure   --account NOMBRE --property NOMBRE --url https://sitio --timezone America/Santiago
@@ -19,179 +19,12 @@
  * ("Se bloqueó esta app"). El cliente de escritorio se crea con el skill `oauth`:
  *   gauth create --project <gcp> --name "<App> CLI" --type desktop --email <correo> --out client.json
  */
-import { createServer } from "node:http";
-import { spawnSync } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
+import { Blocked, api, authorize, emit, need, parseCli, whoami } from "./lib/gapi.mjs";
 
-const HOME = path.join(os.homedir(), ".claude-skills", "analytics");
-const TOKEN = path.join(HOME, "token.json");
-const CLIENT = path.join(HOME, "client.json");
-const SCOPES = [
-  "openid",
-  "email",
-  "https://www.googleapis.com/auth/analytics.edit",
-  "https://www.googleapis.com/auth/analytics.manage.users",
-  "https://www.googleapis.com/auth/analytics.readonly",
-];
 const ADMIN = "https://analyticsadmin.googleapis.com";
 const DATA = "https://analyticsdata.googleapis.com/v1beta";
-
-// ─── Utilidades ──────────────────────────────────────────────────────────────────────────────────────────────
-class Blocked extends Error {
-  constructor(code, message, extra = {}) {
-    super(message);
-    this.code = code;
-    this.extra = extra;
-  }
-}
-const log = (m) => process.stderr.write(`[ga] ${m}\n`);
-const emit = (o) => process.stdout.write(JSON.stringify(o, null, 2) + "\n");
-
-const argv = process.argv.slice(2);
-const [cmd] = argv;
-const flags = {};
-for (let i = 1; i < argv.length; i++) {
-  if (!argv[i].startsWith("--")) continue;
-  const k = argv[i].slice(2);
-  const v = argv[i + 1] && !argv[i + 1].startsWith("--") ? argv[++i] : "true";
-  (flags[k] ??= []).push(v);
-}
-const flag = (k) => flags[k]?.[0];
-const many = (k) => (flags[k] ?? []).flatMap((v) => v.split(",")).map((s) => s.trim()).filter(Boolean);
-const need = (v, what) => {
-  if (!v) throw new Blocked("USAGE", `Falta ${what}`);
-  return v;
-};
-
-function readClient(file = CLIENT) {
-  if (!existsSync(file)) throw new Blocked("NOT_AUTHORIZED", `No hay cliente OAuth en ${file}. Corre: ga auth --client-file <json de gauth>`);
-  const raw = JSON.parse(readFileSync(file, "utf8"));
-  const c = raw.installed ?? raw.web ?? raw;
-  return { id: c.client_id, secret: c.client_secret };
-}
-
-// ─── OAuth: autorización (loopback + PKCE) y renovación del token ───────────────────────────────────────────
-async function authorize() {
-  const file = need(flag("client-file") ?? (existsSync(CLIENT) ? CLIENT : null), "--client-file");
-  mkdirSync(HOME, { recursive: true });
-  if (path.resolve(file) !== path.resolve(CLIENT)) writeFileSync(CLIENT, readFileSync(file));
-  chmodSafe(CLIENT);
-  const client = readClient();
-  const verifier = randomBytes(32).toString("base64url");
-  const challenge = createHash("sha256").update(verifier).digest("base64url");
-  const state = randomBytes(12).toString("hex");
-
-  const { code, redirectUri } = await new Promise((resolve, reject) => {
-    const server = createServer((req, res) => {
-      const url = new URL(req.url, "http://127.0.0.1");
-      if (url.pathname !== "/") return res.end();
-      const ok = url.searchParams.get("state") === state && url.searchParams.get("code");
-      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-      res.end(ok ? "<h2>Listo. Ya puedes cerrar esta pestaña.</h2>" : `<h2>Error: ${url.searchParams.get("error") ?? "respuesta inválida"}</h2>`);
-      server.close();
-      if (ok) resolve({ code: url.searchParams.get("code"), redirectUri });
-      else reject(new Blocked("NOT_AUTHORIZED", `Google respondió: ${url.searchParams.get("error") ?? "sin código"}`));
-    });
-    let redirectUri;
-    server.listen(0, "127.0.0.1", () => {
-      redirectUri = `http://127.0.0.1:${server.address().port}`;
-      const auth = new URL("https://accounts.google.com/o/oauth2/v2/auth");
-      auth.search = new URLSearchParams({
-        client_id: client.id, redirect_uri: redirectUri, response_type: "code", scope: SCOPES.join(" "),
-        access_type: "offline", prompt: "consent", state, code_challenge: challenge, code_challenge_method: "S256",
-      }).toString();
-      log("Abre esta URL y acepta (cuenta de Google con acceso a Analytics):");
-      process.stderr.write(auth.toString() + "\n");
-      openBrowser(auth.toString());
-    });
-    setTimeout(() => {
-      server.close();
-      reject(new Blocked("NOT_AUTHORIZED", "Nadie autorizó en 10 minutos."));
-    }, 600000).unref();
-  });
-
-  const token = await postForm("https://oauth2.googleapis.com/token", {
-    code, client_id: client.id, client_secret: client.secret, redirect_uri: redirectUri, grant_type: "authorization_code", code_verifier: verifier,
-  });
-  if (!token.refresh_token) throw new Blocked("NOT_AUTHORIZED", "Google no devolvió refresh_token (revoca el acceso anterior y repite).");
-  saveToken({ ...token, obtained_at: Date.now() });
-  return whoami();
-}
-
-/** Abre la URL: en el Chrome de automatización (ya con sesión) si se pasa --browser-profile; si no, el navegador por defecto. */
-function openBrowser(url) {
-  const profile = flag("browser-profile");
-  if (process.platform === "darwin") {
-    if (profile) spawnSync("open", ["-na", "Google Chrome", "--args", `--user-data-dir=${profile}`, "--no-first-run", url]);
-    else spawnSync("open", [url]);
-  } else if (process.platform === "win32") spawnSync("cmd", ["/c", "start", "", url]);
-  else spawnSync("xdg-open", [url]);
-}
-
-function chmodSafe(f) {
-  try {
-    chmodSync(f, 0o600);
-  } catch {
-    /* Windows */
-  }
-}
-function saveToken(t) {
-  writeFileSync(TOKEN, JSON.stringify(t, null, 2));
-  chmodSafe(TOKEN);
-}
-
-async function accessToken() {
-  if (!existsSync(TOKEN)) throw new Blocked("NOT_AUTHORIZED", "No hay token. Corre: ga auth --client-file <json>");
-  const t = JSON.parse(readFileSync(TOKEN, "utf8"));
-  if (t.access_token && Date.now() < t.obtained_at + (t.expires_in - 120) * 1000) return t.access_token;
-  const client = readClient();
-  try {
-    const fresh = await postForm("https://oauth2.googleapis.com/token", {
-      client_id: client.id, client_secret: client.secret, refresh_token: t.refresh_token, grant_type: "refresh_token",
-    });
-    saveToken({ ...t, ...fresh, obtained_at: Date.now() });
-    return fresh.access_token;
-  } catch (e) {
-    // En modo "Prueba" Google vence los refresh tokens a los 7 días.
-    throw new Blocked("TOKEN_EXPIRED", `No se pudo renovar el token (${e.message}). Corre ga auth de nuevo.`);
-  }
-}
-
-async function postForm(url, body) {
-  const res = await fetch(url, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(body) });
-  const json = await res.json();
-  if (!res.ok) throw new Error(json.error_description ?? json.error ?? res.status);
-  return json;
-}
-
-/** Llamada a las APIs de Google con manejo de errores comunes. */
-async function api(method, url, body) {
-  const res = await fetch(url, {
-    method,
-    headers: { authorization: `Bearer ${await accessToken()}`, "content-type": "application/json" },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const text = await res.text();
-  const json = text ? JSON.parse(text) : {};
-  if (res.ok) return json;
-  const msg = json.error?.message ?? text;
-  if (/has not been used|is disabled/i.test(msg)) {
-    const service = msg.match(/([a-z]+\.googleapis\.com)/)?.[1];
-    const project = msg.match(/project (\d+)/)?.[1];
-    throw new Blocked("API_DISABLED", msg.split("\n")[0], { enable: `gcloud services enable ${service} --project=${project}` });
-  }
-  if (res.status === 403) throw new Blocked("PERMISSION_DENIED", msg.split("\n")[0]);
-  throw new Blocked("HTTP_ERROR", `${res.status} ${msg.split("\n")[0]}`, { url });
-}
-
-async function whoami() {
-  const t = await accessToken();
-  const info = await (await fetch(`https://oauth2.googleapis.com/tokeninfo?access_token=${t}`)).json();
-  return { email: info.email ?? null, scopes: (info.scope ?? "").split(" ") };
-}
+const { positional, flag, many } = parseCli();
+const [cmd] = positional;
 
 // ─── Analytics Admin ─────────────────────────────────────────────────────────────────────────────────────────
 async function accounts() {

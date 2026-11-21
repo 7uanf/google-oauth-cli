@@ -1,7 +1,7 @@
 {
   "name": "google-oauth-cli",
-  "version": "1.2.0",
-  "description": "Google OAuth 2.0 (consent screen, web and desktop clients, secrets, test users, publishing) and Google Analytics 4 (property, stream, retention, access, reports) from the terminal.",
+  "version": "1.3.0",
+  "description": "Google OAuth (consent screen, web/desktop clients, secrets, test users, publishing), Google Analytics 4 and Google Tag Manager from the terminal — for people and agents.",
   "keywords": [
     "google-oauth",
     "oauth2",
@@ -21,7 +21,10 @@
     "ga4",
     "analytics-admin-api",
     "measurement-id",
-    "desktop-oauth-client"
+    "desktop-oauth-client",
+    "google-tag-manager",
+    "gtm",
+    "tagmanager-api"
   ],
   "homepage": "https://github.com/Z1Code/google-oauth-cli#readme",
   "bugs": {
@@ -38,7 +41,8 @@
     "google-oauth-cli": "cli.mjs",
     "gauth": "cli.mjs",
     "google-oauth-mcp": "mcp/server.mjs",
-    "ga": "ga.mjs"
+    "ga": "ga.mjs",
+    "gtm": "gtm.mjs"
   },
   "main": "lib/consent.mjs",
   "exports": {
@@ -49,6 +53,7 @@
   "files": [
     "cli.mjs",
     "ga.mjs",
+    "gtm.mjs",
     "lib/",
     "mcp/",
     "tools/",
