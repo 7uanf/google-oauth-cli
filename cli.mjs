@@ -278,11 +278,16 @@ async function cmdLogin() {
         await sleep(4000);
       }
       if (!flags.password) {
-        for (let i = 0; i < 2; i++) {
+        for (let i = 0; i < 3; i++) {
+          // Pantalla de llave de acceso (/challenge/pk): "Continuar" abre el aviso del sistema.
+          if (page.url().includes("/challenge/pk")) {
+            await clickText(page, /^(continuar|continue)$/i);
+            console.error("Confirma la llave de acceso en el aviso del sistema (huella, rostro o bloqueo de pantalla).");
+            break;
+          }
+          // Si pide contraseña primero: "Probar otra manera" y elegir la llave de acceso.
           const passkey = await clickText(page, /llave de acceso|passkey/i);
-          if (passkey.ok) break;
-          // Si muestra la contraseña primero: "Probar otra manera" → lista de métodos.
-          await clickText(page, /probar otra manera|try another way/i);
+          if (!passkey.ok) await clickText(page, /probar otr[ao] (manera|método)|try another way/i);
           await sleep(2500);
         }
       }
