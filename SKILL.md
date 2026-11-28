@@ -121,6 +121,7 @@ everything else is API. Lessons verified against real GA4 hits:
 | `TOS_REQUIRED` | New GA account: give the user `url` to accept the Analytics terms, then `ga ensure` again. |
 | `API_DISABLED` | Run the `enable` command from the JSON. |
 | `ACCOUNT_REQUIRED` | No GTM account by that name: create it once in the web (ToS), then `gtm ensure`. |
+| `403 access_denied` + a brand account name | App is Testing and the authorizing account is a **brand account** (no email → not a test user). Publish: `gauth branding` + `gauth publish` (see Fact 6). |
 
 **Rules**
 - Max one retry per command. A second identical failure means the console changed: fix the code in the repo.
@@ -140,3 +141,8 @@ everything else is API. Lessons verified against real GA4 hits:
 5. GA4: load gtag only after cookie consent, never on staging/localhost; privacy policy must match `--retention`.
    Servers read GA/Search Console with a service account granted `viewer` (`ga grant`), not a person's token.
    Search Console ↔ GA linking has no API (Admin → Product links, 30 s).
+6. **Brand account (cuenta de marca) + Testing = 403 access_denied**, even when its owner IS a test user: a brand
+   account (e.g. a YouTube brand channel like "J Topic Show") has no email of its own, so it can't be added to the
+   test-users list. To authorize one, publish the app: `gauth branding` + `gauth publish` (stays "unverified" with a
+   100-user cap if the scope is sensitive). `gauth diagnose` now surfaces this as a `BRAND_ACCOUNT_TESTING` note
+   while `publishingStatus` is `testing`.

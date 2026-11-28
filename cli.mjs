@@ -358,6 +358,15 @@ async function cmdDiagnose() {
         }
       }
 
+      if (p.notes?.length) {
+        console.log(`\n${C.b}Notas${C.r}`);
+        for (const n of p.notes) {
+          console.log(`  ${C.dim}• ${n.code}${C.r}`);
+          console.log(`    ${C.dim}${n.detail}${C.r}`);
+          console.log(`    ${C.dim}→ ${n.fix}${C.r}`);
+        }
+      }
+
       if (deLogin.length || dePublicar.length) {
         console.log(`\n${C.dim}Atajo: 'gauth ensure' resuelve lo del login solo.${C.r}`);
       }
